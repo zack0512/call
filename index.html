@@ -3,25 +3,202 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>鏡頭測試</title>
+    <title>AREA 視訊通話</title>
+    <style>
+        body { font-family: sans-serif; text-align: center; background: #f0f2f5; margin: 0; padding: 20px; }
+        .video-container { display: flex; justify-content: center; gap: 20px; flex-wrap: wrap; margin-bottom: 20px; }
+        video { width: 45vw; min-width: 300px; height: 35vh; background: black; border-radius: 8px; object-fit: cover; }
+        input, button { padding: 10px 15px; font-size: 16px; margin: 5px; border-radius: 5px; }
+        button { cursor: pointer; border: none; background: #007bff; color: white; }
+        button:hover { background: #0056b3; }
+        input { border: 1px solid #ccc; }
+        #room-status { font-weight: bold; color: #333; }
+    </style>
 </head>
-<body style="text-align: center; font-family: sans-serif; padding: 20px;">
-    <h2>手機鏡頭簡單測試</h2>
-    <button id="cam-btn" style="padding: 15px 25px; font-size: 18px; background: #007bff; color: white; border: none; border-radius: 5px;">開啟相機</button>
-    <br><br>
-    <video id="test-video" autoplay playsinline style="width: 100%; max-width: 400px; background: black; border-radius: 8px;"></video>
+<body>
 
-    <script>
-        const btn = document.getElementById('cam-btn');
-        const video = document.getElementById('test-video');
+    <h2>AREA 視訊通話</h2>
+    <div>
+        <input type="text" id="room-input" placeholder="輸入自訂會議代號 (例如: room1)">
+        <button id="create-btn">建立房間</button>
+        <button id="join-btn">加入房間</button>
+    </div>
+    <p>目前通話狀態：<span id="room-status">尚未連線</span></p>
 
-        btn.onclick = async () => {
+    <div class="video-container">
+        <div>
+            <h3>我的鏡頭</h3>
+            <video id="local-video" autoplay playsinline muted></video>
+        </div>
+        <div>
+            <h3>對方鏡頭</h3>
+            <video id="remote-video" autoplay playsinline></video>
+        </div>
+    </div>
+
+    <!-- 引入 Firebase 與邏輯 -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.x.x/firebase-app.js";
+        import { getDatabase, ref, set, get, onValue, push, child } from "https://www.gstatic.com/firebasejs/10.x.x/firebase-database.js";
+
+        // 你的 Firebase 設定
+        const firebaseConfig = {
+          apiKey: "AIzaSyBZ9s5Ku8aEzaVEmk_7ztbIiHXI6qmz5H0",
+          authDomain: "my-project-zack0512.firebaseapp.com",
+          databaseURL: "https://my-project-zack0512-default-rtdb.firebaseio.com",
+          projectId: "my-project-zack0512",
+          storageBucket: "my-project-zack0512.firebasestorage.app",
+          messagingSenderId: "972310414233",
+          appId: "1:972310414233:web:cca5b83751ddd989530908",
+          measurementId: "G-89NKXQZXKD"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const db = getDatabase(app);
+
+        const servers = {
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' }
+            ]
+        };
+
+        let pc;
+        let localStream;
+        let remoteStream;
+        let roomId = '';
+
+        const localVideo = document.getElementById('local-video');
+        const remoteVideo = document.getElementById('remote-video');
+        const createBtn = document.getElementById('create-btn');
+        const joinBtn = document.getElementById('join-btn');
+        const roomInput = document.getElementById('room-input');
+        const roomStatus = document.getElementById('room-status');
+
+        // 1. 啟動本機鏡頭（使用剛才測試成功的方法）
+        async function startCamera() {
+            if (!localStream) {
+                roomStatus.innerText = '正在請求相機與麥克風權限...';
+                localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                
+                localVideo.srcObject = localStream;
+                await localVideo.play();
+
+                remoteStream = new MediaStream();
+                remoteVideo.srcObject = remoteStream;
+                
+                roomStatus.innerText = '相機已啟動';
+            }
+        }
+
+        // 初始化 WebRTC 連線物件
+        function createPeerConnection(roomRef, isCaller) {
+            pc = new RTCPeerConnection(servers);
+
+            localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+
+            pc.ontrack = event => {
+                event.streams[0].getTracks().forEach(track => {
+                    remoteStream.addTrack(track);
+                });
+            };
+
+            const callerCandidatesRef = ref(db, `rooms/${roomId}/callerCandidates`);
+            const calleeCandidatesRef = ref(db, `rooms/${roomId}/calleeCandidates`);
+
+            pc.onicecandidate = event => {
+                if (event.candidate) {
+                    const candidateRef = isCaller ? push(callerCandidatesRef) : push(calleeCandidatesRef);
+                    set(candidateRef, event.candidate.toJSON());
+                }
+            };
+
+            if (isCaller) {
+                onValue(child(roomRef, 'answer'), snapshot => {
+                    const data = snapshot.val();
+                    if (data && !pc.currentRemoteDescription) {
+                        pc.setRemoteDescription(new RTCSessionDescription(data));
+                        roomStatus.innerText = '已成功連線！';
+                    }
+                });
+
+                onValue(calleeCandidatesRef, snapshot => {
+                    snapshot.forEach(childSnapshot => {
+                        pc.addIceCandidate(new RTCIceCandidate(childSnapshot.val()));
+                    });
+                });
+            } else {
+                onValue(callerCandidatesRef, snapshot => {
+                    snapshot.forEach(childSnapshot => {
+                        pc.addIceCandidate(new RTCIceCandidate(childSnapshot.val()));
+                    });
+                });
+            }
+        }
+
+        // 2. 建立房間 (發起端)
+        createBtn.onclick = async () => {
+            roomId = roomInput.value.trim();
+            if (!roomId) {
+                alert('請先輸入自訂會議代號！');
+                return;
+            }
+
             try {
-                const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-                video.srcObject = stream;
-                alert('相機成功開啟！');
+                await startCamera();
+                roomStatus.innerText = `房間 [${roomId}] 建立中，等待對方加入...`;
+
+                const roomRef = ref(db, `rooms/${roomId}`);
+                createPeerConnection(roomRef, true);
+
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+
+                await set(child(roomRef, 'offer'), {
+                    type: offer.type,
+                    sdp: offer.sdp
+                });
             } catch (err) {
-                alert('開啟失敗：' + err.name + '\n' + err.message);
+                console.error(err);
+                alert('建立房間發生錯誤：' + err.message);
+            }
+        };
+
+        // 3. 加入房間 (接收端)
+        joinBtn.onclick = async () => {
+            roomId = roomInput.value.trim();
+            if (!roomId) {
+                alert('請輸入要加入的會議代號！');
+                return;
+            }
+
+            try {
+                await startCamera();
+                roomStatus.innerText = `正在加入房間 [${roomId}]...`;
+
+                const roomRef = ref(db, `rooms/${roomId}`);
+                createPeerConnection(roomRef, false);
+
+                const snapshot = await get(child(roomRef, 'offer'));
+                if (snapshot.exists()) {
+                    const offer = snapshot.val();
+                    await pc.setRemoteDescription(new RTCSessionDescription(offer));
+
+                    const answer = await pc.createAnswer();
+                    await pc.setLocalDescription(answer);
+
+                    await set(child(roomRef, 'answer'), {
+                        type: answer.type,
+                        sdp: answer.sdp
+                    });
+                    roomStatus.innerText = '已成功連線！';
+                } else {
+                    alert('找不到該會議代號，請確認對方是否已經建立！');
+                    roomStatus.innerText = '連線失敗：找不到房間';
+                }
+            } catch (err) {
+                console.error(err);
+                alert('加入房間發生錯誤：' + err.message);
             }
         };
     </script>
