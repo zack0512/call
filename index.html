@@ -2,7 +2,8 @@
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
-    <title>AREA 視訊通話 (自訂代號)</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AREA 視訊通話 (完整除錯版)</title>
     <style>
         body { font-family: sans-serif; text-align: center; background: #f0f2f5; margin: 0; padding: 20px; }
         .video-container { display: flex; justify-content: center; gap: 20px; flex-wrap: wrap; margin-bottom: 20px; }
@@ -18,7 +19,7 @@
 
     <h2>AREA 視訊通話</h2>
     <div>
-        <input type="text" id="room-input" placeholder="輸入自訂會議代號 (例如: myroom1)">
+        <input type="text" id="room-input" placeholder="輸入自訂會議代號 (例如: room1)">
         <button id="create-btn">建立房間</button>
         <button id="join-btn">加入房間</button>
     </div>
@@ -74,14 +75,35 @@
         const roomInput = document.getElementById('room-input');
         const roomStatus = document.getElementById('room-status');
 
-        // 1. 啟動本機鏡頭
+        // 1. 啟動本機鏡頭（加入防錯與提示）
         async function startCamera() {
-            if (!localStream) {
-                localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-                localVideo.srcObject = localStream;
-                
-                remoteStream = new MediaStream();
-                remoteVideo.srcObject = remoteStream;
+            try {
+                if (!localStream) {
+                    roomStatus.innerText = '正在請求相機與麥克風權限...';
+                    
+                    // 檢查瀏覽器是否支援 getUserMedia
+                    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                        throw new Error('您的瀏覽器不支援存取相機 (getUserMedia API 不存在)');
+                    }
+
+                    localStream = await navigator.mediaDevices.getUserMedia({ 
+                        video: { facingMode: "user" }, 
+                        audio: true 
+                    });
+                    
+                    localVideo.srcObject = localStream;
+                    await localVideo.play();
+
+                    remoteStream = new MediaStream();
+                    remoteVideo.srcObject = remoteStream;
+                    
+                    roomStatus.innerText = '相機已啟動，準備連線...';
+                }
+            } catch (error) {
+                console.error('取得相機失敗：', error);
+                alert('無法啟動相機/麥克風：\n' + error.message + '\n請確認是否有其他 App 佔用鏡頭，或網頁權限被封鎖。');
+                roomStatus.innerText = '相機啟動失敗';
+                throw error;
             }
         }
 
@@ -138,19 +160,23 @@
                 return;
             }
 
-            await startCamera();
-            roomStatus.innerText = `房間 [${roomId}] 建立中，等待對方加入...`;
+            try {
+                await startCamera();
+                roomStatus.innerText = `房間 [${roomId}] 建立中，等待對方加入...`;
 
-            const roomRef = ref(db, `rooms/${roomId}`);
-            createPeerConnection(roomRef, true);
+                const roomRef = ref(db, `rooms/${roomId}`);
+                createPeerConnection(roomRef, true);
 
-            const offer = await pc.createOffer();
-            await pc.setLocalDescription(offer);
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
 
-            await set(child(roomRef, 'offer'), {
-                type: offer.type,
-                sdp: offer.sdp
-            });
+                await set(child(roomRef, 'offer'), {
+                    type: offer.type,
+                    sdp: offer.sdp
+                });
+            } catch (err) {
+                console.error(err);
+            }
         };
 
         // 3. 加入房間 (接收端)
@@ -161,28 +187,32 @@
                 return;
             }
 
-            await startCamera();
-            roomStatus.innerText = `正在加入房間 [${roomId}]...`;
+            try {
+                await startCamera();
+                roomStatus.innerText = `正在加入房間 [${roomId}]...`;
 
-            const roomRef = ref(db, `rooms/${roomId}`);
-            createPeerConnection(roomRef, false);
+                const roomRef = ref(db, `rooms/${roomId}`);
+                createPeerConnection(roomRef, false);
 
-            const snapshot = await get(child(roomRef, 'offer'));
-            if (snapshot.exists()) {
-                const offer = snapshot.val();
-                await pc.setRemoteDescription(new RTCSessionDescription(offer));
+                const snapshot = await get(child(roomRef, 'offer'));
+                if (snapshot.exists()) {
+                    const offer = snapshot.val();
+                    await pc.setRemoteDescription(new RTCSessionDescription(offer));
 
-                const answer = await pc.createAnswer();
-                await pc.setLocalDescription(answer);
+                    const answer = await pc.createAnswer();
+                    await pc.setLocalDescription(answer);
 
-                await set(child(roomRef, 'answer'), {
-                    type: answer.type,
-                    sdp: answer.sdp
-                });
-                roomStatus.innerText = '已成功連線！';
-            } else {
-                alert('找不到該會議代號，請確認對方是否已經建立！');
-                roomStatus.innerText = '連線失敗：找不到房間';
+                    await set(child(roomRef, 'answer'), {
+                        type: answer.type,
+                        sdp: answer.sdp
+                    });
+                    roomStatus.innerText = '已成功連線！';
+                } else {
+                    alert('找不到該會議代號，請確認對方是否已經建立！');
+                    roomStatus.innerText = '連線失敗：找不到房間';
+                }
+            } catch (err) {
+                console.error(err);
             }
         };
     </script>
