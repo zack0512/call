@@ -41,10 +41,10 @@
         </div>
     </div>
 
-    <!-- 引入 Firebase 與邏輯 -->
+    <!-- 修正 Firebase 載入版本，改用明確的版本號 -->
     <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.x.x/firebase-app.js";
-        import { getDatabase, ref, set, get, onValue, push, child } from "https://www.gstatic.com/firebasejs/10.x.x/firebase-database.js";
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+        import { getDatabase, ref, set, get, onValue, push, child } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
 
         const firebaseConfig = {
           apiKey: "AIzaSyBZ9s5Ku8aEzaVEmk_7ztbIiHXI6qmz5H0",
@@ -82,10 +82,14 @@
 
         // 1. 開啟相機按鈕事件
         camBtn.addEventListener('click', async () => {
-            alert('按鈕點擊成功！準備啟動相機...'); // 確保點擊事件正常觸發
             try {
                 roomStatus.innerText = '正在請求相機與麥克風權限...';
                 
+                // 檢查是否為安全環境 (HTTPS 或 localhost)
+                if (!window.isSecureContext) {
+                    throw new Error('瀏覽器安全限制：請透過 https:// 或 localhost (127.0.0.1) 執行此網頁，否則無法存取相機。');
+                }
+
                 if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
                     throw new Error('此瀏覽器不支援 getUserMedia API');
                 }
@@ -133,6 +137,9 @@
                 }
             };
 
+            // 用來記錄已經加入過的 candidate，避免重複新增
+            const addedCandidates = new Set();
+
             if (isCaller) {
                 onValue(child(roomRef, 'answer'), snapshot => {
                     const data = snapshot.val();
@@ -144,13 +151,23 @@
 
                 onValue(calleeCandidatesRef, snapshot => {
                     snapshot.forEach(childSnapshot => {
-                        pc.addIceCandidate(new RTCIceCandidate(childSnapshot.val()));
+                        const candidateData = childSnapshot.val();
+                        const key = JSON.stringify(candidateData);
+                        if (!addedCandidates.has(key)) {
+                            addedCandidates.add(key);
+                            pc.addIceCandidate(new RTCIceCandidate(candidateData)).catch(e => console.error(e));
+                        }
                     });
                 });
             } else {
                 onValue(callerCandidatesRef, snapshot => {
                     snapshot.forEach(childSnapshot => {
-                        pc.addIceCandidate(new RTCIceCandidate(childSnapshot.val()));
+                        const candidateData = childSnapshot.val();
+                        const key = JSON.stringify(candidateData);
+                        if (!addedCandidates.has(key)) {
+                            addedCandidates.add(key);
+                            pc.addIceCandidate(new RTCIceCandidate(candidateData)).catch(e => console.error(e));
+                        }
                     });
                 });
             }
@@ -172,6 +189,9 @@
                 roomStatus.innerText = `房間 [${roomId}] 建立中，等待對方加入...`;
 
                 const roomRef = ref(db, `rooms/${roomId}`);
+                // 建立前先清空舊的房間資料避免干擾
+                await set(roomRef, null);
+
                 createPeerConnection(roomRef, true);
 
                 const offer = await pc.createOffer();
