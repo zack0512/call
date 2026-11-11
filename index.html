@@ -19,11 +19,14 @@
 
     <h2>AREA 視訊通話</h2>
     <div>
+        <button id="cam-btn" style="background: #28a745;">1. 點此先開啟我的鏡頭</button>
+    </div>
+    <div style="margin-top: 10px;">
         <input type="text" id="room-input" placeholder="輸入自訂會議代號 (例如: room1)">
         <button id="create-btn">建立房間</button>
         <button id="join-btn">加入房間</button>
     </div>
-    <p>目前通話狀態：<span id="room-status">尚未連線</span></p>
+    <p>目前通話狀態：<span id="room-status">請先點擊上方按鈕開啟鏡頭</span></p>
 
     <div class="video-container">
         <div>
@@ -41,7 +44,6 @@
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.x.x/firebase-app.js";
         import { getDatabase, ref, set, get, onValue, push, child } from "https://www.gstatic.com/firebasejs/10.x.x/firebase-database.js";
 
-        // 你的 Firebase 設定
         const firebaseConfig = {
           apiKey: "AIzaSyBZ9s5Ku8aEzaVEmk_7ztbIiHXI6qmz5H0",
           authDomain: "my-project-zack0512.firebaseapp.com",
@@ -70,14 +72,15 @@
 
         const localVideo = document.getElementById('local-video');
         const remoteVideo = document.getElementById('remote-video');
+        const camBtn = document.getElementById('cam-btn');
         const createBtn = document.getElementById('create-btn');
         const joinBtn = document.getElementById('join-btn');
         const roomInput = document.getElementById('room-input');
         const roomStatus = document.getElementById('room-status');
 
-        // 1. 啟動本機鏡頭（使用剛才測試成功的方法）
-        async function startCamera() {
-            if (!localStream) {
+        // 1. 獨立的相機開啟按鈕（確保鏡頭一定先開好）
+        camBtn.onclick = async () => {
+            try {
                 roomStatus.innerText = '正在請求相機與麥克風權限...';
                 localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
                 
@@ -87,9 +90,15 @@
                 remoteStream = new MediaStream();
                 remoteVideo.srcObject = remoteStream;
                 
-                roomStatus.innerText = '相機已啟動';
+                roomStatus.innerText = '相機已就緒！請輸入代號建立或加入房間。';
+                camBtn.style.backgroundColor = '#6c757d';
+                camBtn.innerText = '鏡頭已開啟';
+            } catch (err) {
+                console.error(err);
+                alert('無法開啟相機：' + err.message);
+                roomStatus.innerText = '相機開啟失敗';
             }
-        }
+        };
 
         // 初始化 WebRTC 連線物件
         function createPeerConnection(roomRef, isCaller) {
@@ -138,6 +147,10 @@
 
         // 2. 建立房間 (發起端)
         createBtn.onclick = async () => {
+            if (!localStream) {
+                alert('請先點擊上方按鈕開啟你的鏡頭！');
+                return;
+            }
             roomId = roomInput.value.trim();
             if (!roomId) {
                 alert('請先輸入自訂會議代號！');
@@ -145,7 +158,6 @@
             }
 
             try {
-                await startCamera();
                 roomStatus.innerText = `房間 [${roomId}] 建立中，等待對方加入...`;
 
                 const roomRef = ref(db, `rooms/${roomId}`);
@@ -166,6 +178,10 @@
 
         // 3. 加入房間 (接收端)
         joinBtn.onclick = async () => {
+            if (!localStream) {
+                alert('請先點擊上方按鈕開啟你的鏡頭！');
+                return;
+            }
             roomId = roomInput.value.trim();
             if (!roomId) {
                 alert('請輸入要加入的會議代號！');
@@ -173,7 +189,6 @@
             }
 
             try {
-                await startCamera();
                 roomStatus.innerText = `正在加入房間 [${roomId}]...`;
 
                 const roomRef = ref(db, `rooms/${roomId}`);
