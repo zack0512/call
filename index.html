@@ -3,15 +3,16 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AREA 視訊通話 (除錯修正版)</title>
+    <title>AREA 視訊通話 (手機優化版)</title>
     <style>
-        body { font-family: sans-serif; text-align: center; background: #f0f2f5; margin: 0; padding: 20px; }
-        .video-container { display: flex; justify-content: center; gap: 20px; flex-wrap: wrap; margin-bottom: 20px; }
-        video { width: 45vw; min-width: 300px; height: 35vh; background: black; border-radius: 8px; object-fit: cover; }
-        input, button { padding: 12px 18px; font-size: 16px; margin: 8px; border-radius: 6px; }
+        body { font-family: sans-serif; text-align: center; background: #f0f2f5; margin: 0; padding: 10px; }
+        .video-container { display: flex; flex-direction: column; align-items: center; gap: 15px; margin-bottom: 20px; }
+        .video-box { width: 100%; max-width: 400px; }
+        video { width: 100%; height: 25vh; min-height: 220px; background: black; border-radius: 8px; object-fit: cover; }
+        input, button { padding: 12px 18px; font-size: 16px; margin: 6px; border-radius: 6px; }
         button { cursor: pointer; border: none; background: #007bff; color: white; font-weight: bold; }
         button:hover { background: #0056b3; }
-        input { border: 1px solid #ccc; width: 220px; }
+        input { border: 1px solid #ccc; width: 200px; }
         #room-status { font-weight: bold; color: #333; }
         .cam-btn-style { background: #28a745 !important; }
         .cam-btn-style:hover { background: #218838 !important; }
@@ -23,25 +24,26 @@
     <div>
         <button id="cam-btn" class="cam-btn-style">1. 點此先開啟我的鏡頭</button>
     </div>
-    <div style="margin-top: 10px;">
-        <input type="text" id="room-input" placeholder="輸入自訂會議代號 (例: room1)">
+    <div style="margin-top: 5px;">
+        <input type="text" id="room-input" placeholder="輸入會議代號 (例: room1)">
+        <br>
         <button id="create-btn">建立房間</button>
         <button id="join-btn">加入房間</button>
     </div>
-    <p>目前通話狀態：<span id="room-status">請先點擊上方按鈕開啟鏡頭</span></p>
+    <p>狀態：<span id="room-status">請先點擊上方按鈕開啟鏡頭</span></p>
 
     <div class="video-container">
-        <div>
+        <div class="video-box">
             <h3>我的鏡頭</h3>
             <video id="local-video" autoplay playsinline muted></video>
         </div>
-        <div>
+        <div class="video-box">
             <h3>對方鏡頭</h3>
             <video id="remote-video" autoplay playsinline></video>
         </div>
     </div>
 
-    <!-- 修正 Firebase 載入版本，改用明確的版本號 -->
+    <!-- Firebase 10.8.0 模組 -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
         import { getDatabase, ref, set, get, onValue, push, child } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
@@ -69,7 +71,7 @@
 
         let pc;
         let localStream = null;
-        let remoteStream;
+        let remoteStream = null;
         let roomId = '';
 
         const localVideo = document.getElementById('local-video');
@@ -80,31 +82,27 @@
         const roomInput = document.getElementById('room-input');
         const roomStatus = document.getElementById('room-status');
 
-        // 1. 開啟相機按鈕事件
+        // 1. 開啟相機
         camBtn.addEventListener('click', async () => {
             try {
                 roomStatus.innerText = '正在請求相機與麥克風權限...';
                 
-                // 檢查是否為安全環境 (HTTPS 或 localhost)
                 if (!window.isSecureContext) {
-                    throw new Error('瀏覽器安全限制：請透過 https:// 或 localhost (127.0.0.1) 執行此網頁，否則無法存取相機。');
-                }
-
-                if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-                    throw new Error('此瀏覽器不支援 getUserMedia API');
+                    throw new Error('必須透過 https:// 或 localhost 執行才能使用相機');
                 }
 
                 localStream = await navigator.mediaDevices.getUserMedia({ 
-                    video: { facingMode: "user" }, 
+                    video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: "user" }, 
                     audio: true 
                 });
                 
                 localVideo.srcObject = localStream;
                 await localVideo.play();
 
+                // 初始化遠端串流容器
                 remoteStream = new MediaStream();
                 remoteVideo.srcObject = remoteStream;
-                
+
                 roomStatus.innerText = '相機已就緒！請輸入代號建立或加入房間。';
                 camBtn.style.backgroundColor = '#6c757d';
                 camBtn.innerText = '鏡頭已開啟';
@@ -115,16 +113,22 @@
             }
         });
 
-        // 初始化 WebRTC 連線物件
+        // 初始化 WebRTC
         function createPeerConnection(roomRef, isCaller) {
             pc = new RTCPeerConnection(servers);
 
-            localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+            // 將自己的軌道加入連線
+            localStream.getTracks().forEach(track => {
+                pc.addTrack(track, localStream);
+            });
 
+            // 當收到遠端軌道時，直接塞進 remoteStream 播放
             pc.ontrack = event => {
                 event.streams[0].getTracks().forEach(track => {
                     remoteStream.addTrack(track);
                 });
+                remoteVideo.play().catch(e => console.log("自動播放被阻擋，等待點擊畫面", e));
+                roomStatus.innerText = '已成功連線！雙方視訊中';
             };
 
             const callerCandidatesRef = ref(db, `rooms/${roomId}/callerCandidates`);
@@ -137,7 +141,6 @@
                 }
             };
 
-            // 用來記錄已經加入過的 candidate，避免重複新增
             const addedCandidates = new Set();
 
             if (isCaller) {
@@ -145,7 +148,6 @@
                     const data = snapshot.val();
                     if (data && !pc.currentRemoteDescription) {
                         pc.setRemoteDescription(new RTCSessionDescription(data));
-                        roomStatus.innerText = '已成功連線！';
                     }
                 });
 
@@ -173,56 +175,38 @@
             }
         }
 
-        // 2. 建立房間 (發起端)
+        // 2. 建立房間
         createBtn.addEventListener('click', async () => {
-            if (!localStream) {
-                alert('請先點擊上方綠色按鈕開啟你的鏡頭！');
-                return;
-            }
+            if (!localStream) { alert('請先點擊上方綠色按鈕開啟你的鏡頭！'); return; }
             roomId = roomInput.value.trim();
-            if (!roomId) {
-                alert('請先輸入自訂會議代號！');
-                return;
-            }
+            if (!roomId) { alert('請先輸入會議代號！'); return; }
 
             try {
                 roomStatus.innerText = `房間 [${roomId}] 建立中，等待對方加入...`;
-
                 const roomRef = ref(db, `rooms/${roomId}`);
-                // 建立前先清空舊的房間資料避免干擾
-                await set(roomRef, null);
+                await set(roomRef, null); // 清空舊資料
 
                 createPeerConnection(roomRef, true);
 
                 const offer = await pc.createOffer();
                 await pc.setLocalDescription(offer);
-
-                await set(child(roomRef, 'offer'), {
-                    type: offer.type,
-                    sdp: offer.sdp
-                });
+                await set(child(roomRef, 'offer'), { type: offer.type, sdp: offer.sdp });
             } catch (err) {
                 console.error(err);
                 alert('建立房間發生錯誤：' + err.message);
             }
         });
 
-        // 3. 加入房間 (接收端)
+        // 3. 加入房間
         joinBtn.addEventListener('click', async () => {
-            if (!localStream) {
-                alert('請先點擊上方綠色按鈕開啟你的鏡頭！');
-                return;
-            }
+            if (!localStream) { alert('請先點擊上方綠色按鈕開啟你的鏡頭！'); return; }
             roomId = roomInput.value.trim();
-            if (!roomId) {
-                alert('請輸入要加入的會議代號！');
-                return;
-            }
+            if (!roomId) { alert('請輸入要加入的會議代號！'); return; }
 
             try {
                 roomStatus.innerText = `正在加入房間 [${roomId}]...`;
-
                 const roomRef = ref(db, `rooms/${roomId}`);
+
                 createPeerConnection(roomRef, false);
 
                 const snapshot = await get(child(roomRef, 'offer'));
@@ -230,16 +214,12 @@
                     const offer = snapshot.val();
                     await pc.setRemoteDescription(new RTCSessionDescription(offer));
 
-                    const answer = await pc.createAnswer();
+                    const answer = aic = await pc.createAnswer();
                     await pc.setLocalDescription(answer);
-
-                    await set(child(roomRef, 'answer'), {
-                        type: answer.type,
-                        sdp: answer.sdp
-                    });
-                    roomStatus.innerText = '已成功連線！';
+                    await set(child(roomRef, 'answer'), { type: answer.type, sdp: answer.sdp });
+                    roomStatus.innerText = '已送出加入請求，建立連線中...';
                 } else {
-                    alert('找不到該會議代號，請確認對方是否已經建立！');
+                    alert('找不到該會議代號，請確認對方是否已建立！');
                     roomStatus.innerText = '連線失敗：找不到房間';
                 }
             } catch (err) {
