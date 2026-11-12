@@ -16,6 +16,8 @@
         #room-status { font-weight: bold; color: #333; }
         .cam-btn-style { background: #28a745 !important; }
         .cam-btn-style:hover { background: #218838 !important; }
+        .hangup-btn-style { background: #dc3545 !important; display: none; } /* 預設隱藏，連線後顯示 */
+        .hangup-btn-style:hover { background: #c82333 !important; }
     </style>
 </head>
 <body>
@@ -29,6 +31,7 @@
         <br>
         <button id="create-btn">建立房間</button>
         <button id="join-btn">加入房間</button>
+        <button id="hangup-btn" class="hangup-btn-style">掛斷電話</button>
     </div>
     <p>狀態：<span id="room-status">請先點擊上方按鈕開啟鏡頭</span></p>
 
@@ -46,7 +49,7 @@
     <!-- Firebase 10.8.0 模組 -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-        import { getDatabase, ref, set, get, onValue, push, child } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
+        import { getDatabase, ref, set, get, onValue, push, child, remove } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
 
         const firebaseConfig = {
           apiKey: "AIzaSyBZ9s5Ku8aEzaVEmk_7ztbIiHXI6qmz5H0",
@@ -70,16 +73,18 @@
             ]
         };
 
-        let pc;
+        let pc = null;
         let localStream = null;
         let remoteStream = null;
         let roomId = '';
+        let roomRef = null;
 
         const localVideo = document.getElementById('local-video');
         const remoteVideo = document.getElementById('remote-video');
         const camBtn = document.getElementById('cam-btn');
         const createBtn = document.getElementById('create-btn');
         const joinBtn = document.getElementById('join-btn');
+        const hangupBtn = document.getElementById('hangup-btn');
         const roomInput = document.getElementById('room-input');
         const roomStatus = document.getElementById('room-status');
 
@@ -114,8 +119,8 @@
             }
         });
 
-        // 初始化 WebRTC
-        function createPeerConnection(roomRef, isCaller) {
+        // 初始化 WebRTC 與房間監聽
+        function createPeerConnection(targetRoomRef, isCaller) {
             pc = new RTCPeerConnection(servers);
 
             // 將自己的軌道加入連線
@@ -123,13 +128,14 @@
                 pc.addTrack(track, localStream);
             });
 
-            // 當收到遠端軌道時，直接塞進 remoteStream 播放
+            // 當收到遠端軌道時
             pc.ontrack = event => {
                 event.streams[0].getTracks().forEach(track => {
                     remoteStream.addTrack(track);
                 });
-                remoteVideo.play().catch(e => console.log("自動播放被阻擋，等待點擊畫面", e));
+                remoteVideo.play().catch(e => console.log("自動播放被阻擋", e));
                 roomStatus.innerText = '已成功連線！雙方視訊中';
+                hangupBtn.style.display = 'inline-block'; // 連線成功後顯示掛斷按鈕
             };
 
             const callerCandidatesRef = ref(db, `rooms/${roomId}/callerCandidates`);
@@ -145,7 +151,7 @@
             const addedCandidates = new Set();
 
             if (isCaller) {
-                onValue(child(roomRef, 'answer'), snapshot => {
+                onValue(child(targetRoomRef, 'answer'), snapshot => {
                     const data = snapshot.val();
                     if (data && !pc.currentRemoteDescription) {
                         pc.setRemoteDescription(new RTCSessionDescription(data));
@@ -174,6 +180,29 @@
                     });
                 });
             }
+
+            // 監聽房間是否被刪除（對方掛斷或清除房間）
+            onValue(targetRoomRef, snapshot => {
+                if (!snapshot.exists() && pc) {
+                    // 如果房間被刪除了，執行遠端掛斷清理
+                    resetCallState("對方已掛斷電話");
+                }
+            });
+        }
+
+        // 重置通話狀態與釋放連線
+        function resetCallState(message) {
+            if (pc) {
+                pc.close();
+                pc = null;
+            }
+            if (remoteVideo.srcObject) {
+                remoteVideo.srcObject = null;
+            }
+            remoteStream = null;
+            roomRef = null;
+            hangupBtn.style.display = 'none';
+            roomStatus.innerText = message;
         }
 
         // 2. 建立房間
@@ -184,10 +213,11 @@
 
             try {
                 roomStatus.innerText = `房間 [${roomId}] 建立中，等待對方加入...`;
-                const roomRef = ref(db, `rooms/${roomId}`);
+                roomRef = ref(db, `rooms/${roomId}`);
                 await set(roomRef, null); // 清空舊資料
 
                 createPeerConnection(roomRef, true);
+                hangupBtn.style.display = 'inline-block'; // 建立房間後即可掛斷
 
                 const offer = await pc.createOffer();
                 await pc.setLocalDescription(offer);
@@ -206,7 +236,7 @@
 
             try {
                 roomStatus.innerText = `正在加入房間 [${roomId}]...`;
-                const roomRef = ref(db, `rooms/${roomId}`);
+                roomRef = ref(db, `rooms/${roomId}`);
 
                 createPeerConnection(roomRef, false);
 
@@ -215,7 +245,6 @@
                     const offer = snapshot.val();
                     await pc.setRemoteDescription(new RTCSessionDescription(offer));
 
-                    // 已修正：移除原本多餘的 aic =
                     const answer = await pc.createAnswer();
                     await pc.setLocalDescription(answer);
                     await set(child(roomRef, 'answer'), { type: answer.type, sdp: answer.sdp });
@@ -228,6 +257,20 @@
                 console.error(err);
                 alert('加入房間發生錯誤：' + err.message);
             }
+        });
+
+        // 4. 掛斷電話按鈕事件
+        hangupBtn.addEventListener('click', async () => {
+            if (roomId) {
+                try {
+                    // 從 Firebase 徹底刪除整個房間節點（將同時觸發雙方的離開機制）
+                    const targetRoomRef = ref(db, `rooms/${roomId}`);
+                    await remove(targetRoomRef);
+                } catch (err) {
+                    console.error("清除房間資料失敗：", err);
+                }
+            }
+            resetCallState("您已掛斷電話");
         });
     </script>
 </body>
